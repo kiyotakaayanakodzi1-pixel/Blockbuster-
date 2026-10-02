@@ -1,0 +1,2206 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Блокбастер</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: #0a0a1a; color: #fff; font-family: Arial, sans-serif;
+    min-height: 100%; overflow-x: hidden; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 6px; }
+  h1 { font-size: 22px; margin-bottom: 6px; color: #4fc3f7; text-shadow: 0 0 15px #4fc3f7; letter-spacing: 3px; }
+  #hud { display: flex; justify-content: space-between; width: 800px; max-width: 95vw; padding: 6px 10px; font-size: 15px; font-weight: bold; color: #ffeb3b; flex-wrap: wrap; gap: 6px; }
+  #hud span { white-space: nowrap; }
+  #record { color: #ff9628; }
+  #starsHud { color: #ffd700; }
+  #trophyHud { color: #ffcc00; }
+  #xpBar { position: fixed; top: 0; left: 0; width: 100%; height: 4px; background: rgba(255,255,255,0.05); z-index: 200; pointer-events: none; }
+  #xpFill { height: 100%; background: linear-gradient(90deg, #8a2be2, #ff32ff); box-shadow: 0 0 10px #ff32ff; width: 0%; transition: width 0.4s ease; }
+  #toast { position: fixed; top: 60px; left: 50%; transform: translateX(-50%) translateY(-20px); background: linear-gradient(135deg, #ff32ff, #8a2be2); color: #fff; padding: 12px 24px; border-radius: 12px; font-weight: bold; box-shadow: 0 0 30px rgba(255,50,255,0.8); z-index: 300; pointer-events: none; opacity: 0; transition: opacity 0.3s, transform 0.3s; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  canvas { background: #000; border: 2px solid #4fc3f7; border-radius: 8px; box-shadow: 0 0 30px rgba(79,195,247,0.5); display: block; max-width: 95vw; height: auto; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; cursor: pointer; }
+  #hint { margin-top: 6px; font-size: 12px; color: #888; text-align: center; line-height: 1.35; }
+  #fileInput { display: none; }
+  @media (max-width: 850px) {
+    h1 { font-size: 16px; } #hud { font-size: 11px; } #hint { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="xpBar"><div id="xpFill"></div></div>
+<div id="toast"></div>
+<h1>БЛОКБАСТЕР</h1>
+<div id="hud">
+  <span>Счёт: <span id="score">0</span></span>
+  <span id="starsHud">⭐ <span id="starsVal">0</span></span>
+  <span id="trophyHud">🏆 <span id="trophyVal">0</span></span>
+  <span id="record">Рекорд: <span id="recordVal">0</span></span>
+  <span>❤ <span id="lives">3</span></span>
+</div>
+<canvas id="game" width="800" height="600"></canvas>
+<input type="file" id="fileInput" accept="image/*">
+<div id="hint">Свайп по экрану — платформа &nbsp;|&nbsp; Тап по кнопкам &nbsp;|&nbsp; ПК: ← → и клавиши</div>
+
+<script>
+/* ============================================================
+   1. КОНСТАНТЫ
+   ============================================================ */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const fileInput = document.getElementById('fileInput');
+const xpFill = document.getElementById('xpFill');
+const toastEl = document.getElementById('toast');
+
+const scoreEl = document.getElementById('score');
+const livesEl = document.getElementById('lives');
+const recordEl = document.getElementById('recordVal');
+const starsEl = document.getElementById('starsVal');
+const trophyEl = document.getElementById('trophyVal');
+
+function showToast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => toastEl.classList.remove('show'), 2500);
+}
+
+const DIFFICULTIES = {
+  easy:   { name: 'ЛЁГКИЙ',  color: '#32ff50', bg1: '#001a00', bg2: '#003300', ballSpeed: 4,   paddleW: 160, lives: 5, scoreMultiplier: 1, rows: 4, rewardFull: 50, rewardHalfMin: 2, rewardHalfMax: 3, hasBoss: true },
+  medium: { name: 'СРЕДНИЙ', color: '#ffe600', bg1: '#1a1500', bg2: '#332200', ballSpeed: 5.5, paddleW: 120, lives: 3, scoreMultiplier: 2, rows: 6, rewardFull: 50, rewardHalfMin: 2, rewardHalfMax: 3, hasBoss: true },
+  hard:   { name: 'СЛОЖНЫЙ', color: '#ff3232', bg1: '#1a0000', bg2: '#330000', ballSpeed: 7.5, paddleW: 90,  lives: 2, scoreMultiplier: 4, rows: 8, rewardFull: 50, rewardHalfMin: 2, rewardHalfMax: 3, hasBoss: true }
+};
+
+const SPECIALS = {
+  multi:    { color: '#ff32ff', label: '×3' },
+  teleport: { color: '#32ffd2', label: '↯' },
+  slow:     { color: '#32c8ff', label: '⏱' },
+  wide:     { color: '#32ff50', label: '↔' },
+  life:     { color: '#ff3232', label: '❤' },
+  star:     { color: '#ffd700', label: '⭐' },
+  bomb:     { color: '#ff6600', label: '💣' },
+  freeze:   { color: '#88ddff', label: '❄' }
+};
+const SPECIAL_KEYS = Object.keys(SPECIALS);
+
+/* ============================================================
+   2. БОЛЕЕ АНИМИРОВАННЫЕ ШАРЫ (добавлены новые)
+   ============================================================ */
+const BALLS = {
+  classic: { name: 'Классика', color: '#ffffff', trailColor: '#ffe600', price: 0,   anim: 'classic' },
+  plasma:  { name: 'Плазма',   color: '#32c8ff', trailColor: '#00ffff', price: 20,  anim: 'plasma' },
+  fire:    { name: 'Огонь',    color: '#ff6622', trailColor: '#ffaa00', price: 40,  anim: 'fire' },
+  neon:    { name: 'Неон',     color: '#ff32ff', trailColor: '#ffff00', price: 60,  anim: 'neon' },
+  ghost:   { name: 'Призрак',  color: '#c8c8ff', trailColor: '#8888ff', price: 80,  anim: 'ghost' },
+  rainbow: { name: 'Радуга',   color: '#ff0000', trailColor: '#00ff00', price: 120, anim: 'rainbow' },
+  star:    { name: 'Звезда',   color: '#ffd700', trailColor: '#ffffff', price: 150, anim: 'star' },
+  void:    { name: 'Пустота',  color: '#000000', trailColor: '#8a2be2', price: 200, anim: 'void' },
+  // НОВЫЕ АНИМИРОВАННЫЕ ШАРЫ
+  lightning: { name: 'Молния',    color: '#ffff44', trailColor: '#00ddff', price: 180, anim: 'lightning' },
+  vortex:    { name: 'Вихрь',     color: '#ff00aa', trailColor: '#00ffff', price: 220, anim: 'vortex' },
+  crystal:   { name: 'Кристалл',  color: '#88eeff', trailColor: '#ffffff', price: 250, anim: 'crystal' },
+  dragon:    { name: 'Дракон',    color: '#ff3232', trailColor: '#ffd700', price: 300, anim: 'dragon' },
+  galaxy:    { name: 'Галактика', color: '#8a2be2', trailColor: '#ff88ff', price: 350, anim: 'galaxy' }
+};
+const BALL_KEYS = Object.keys(BALLS);
+
+/* ============================================================
+   3. БОЛЕЕ УКРАШЕННЫЕ СКИНЫ ПЛАТФОРМЫ
+   ============================================================ */
+const PADDLE_SKINS = {
+  classic: { name: 'Классика', color: '#3296ff', border: '#ffffff', price: 0,   style: 'plain' },
+  gold:    { name: 'Золото',   color: '#ffd700', border: '#fff8c0', price: 50,  style: 'shine' },
+  emerald: { name: 'Изумруд',  color: '#32ff88', border: '#c0ffd8', price: 80,  style: 'plain' },
+  ruby:    { name: 'Рубин',    color: '#ff3244', border: '#ffc0c8', price: 100, style: 'pulse' },
+  cosmic:  { name: 'Космос',   color: '#8a2be2', border: '#d0b0ff', price: 150, style: 'stars' },
+  ice:     { name: 'Лёд',      color: '#88ddff', border: '#ffffff', price: 120, style: 'crystal' },
+  lava:    { name: 'Лава',     color: '#ff4400', border: '#ffcc00', price: 180, style: 'lava' },
+  rainbow: { name: 'Радуга',   color: '#ff0000', border: '#ffffff', price: 220, style: 'rainbow' },
+  matrix:  { name: 'Матрица',  color: '#00ff00', border: '#88ff88', price: 250, style: 'matrix' },
+  ghost:   { name: 'Призрак',  color: '#c8c8ff', border: '#ffffff', price: 280, style: 'ghost' },
+  plasma:  { name: 'Плазма',   color: '#ff32ff', border: '#ffffff', price: 320, style: 'plasma' }
+};
+const SKIN_KEYS = Object.keys(PADDLE_SKINS);
+
+const BRICK_COLS = 10;
+const BRICK_W = W / BRICK_COLS;
+const BRICK_H = 25;
+const ROW_COLORS = ['#ff3232', '#ff9628', '#ffe600', '#32ff50', '#3296ff', '#c832ff', '#ff32c8', '#32ffd2'];
+
+/* ============================================================
+   4. СЕЗОНЫ
+   ============================================================ */
+const SEASONS = [
+  { id: 1, name: 'Сезон 1: Космос', color: '#8a2be2', accent: '#ff32ff', duration: 30,
+    bosses: [
+      { name: 'Астро-Слизень', hp: 5,  trophy: 3,  speed: 1.5, color: '#8a2be2', attack: 'none' },
+      { name: 'Комета-Страж',  hp: 8,  trophy: 6,  speed: 2,   color: '#32c8ff', attack: 'shoot' },
+      { name: 'Космо-Дракон',  hp: 12, trophy: 12, speed: 2.5, color: '#ff32ff', attack: 'rage' }
+    ] },
+  { id: 2, name: 'Сезон 2: Пустыня', color: '#ff9628', accent: '#ffd700', duration: 30,
+    bosses: [
+      { name: 'Скорпион',      hp: 6,  trophy: 4,  speed: 2,   color: '#ff9628', attack: 'shoot' },
+      { name: 'Мумия',         hp: 10, trophy: 8,  speed: 1.5, color: '#ffd700', attack: 'none' },
+      { name: 'Песчаный Лорд', hp: 15, trophy: 15, speed: 2,   color: '#ff6600', attack: 'rage' }
+    ] },
+  { id: 3, name: 'Сезон 3: Лёд', color: '#88ddff', accent: '#ffffff', duration: 30,
+    bosses: [
+      { name: 'Снеговик',     hp: 7,  trophy: 5,  speed: 1.5, color: '#88ddff', attack: 'none' },
+      { name: 'Ледяной Волк', hp: 11, trophy: 9,  speed: 3,   color: '#c0e8ff', attack: 'shoot' },
+      { name: 'Король Льда',  hp: 18, trophy: 18, speed: 2,   color: '#ffffff', attack: 'rage' }
+    ] }
+];
+let currentSeasonId = 1;
+
+/* ============================================================
+   5. СОСТОЯНИЕ
+   ============================================================ */
+let paddle, balls, bricks, boss, particles, bossBullets, score, lives, state;
+let difficulty = 'medium';
+let currentDiff = DIFFICULTIES.medium;
+let record = loadRecords();
+let stars = loadStars();
+let ownedBalls = loadOwnedBalls();
+let ownedSkins = loadOwnedSkins();
+let currentBall = loadCurrentBall();
+let currentSkin = loadCurrentSkin();
+let trophies = loadTrophies();
+let profile = loadProfile();
+let lastDailyDate = loadDaily();
+let savedGame = loadSavedGame();
+
+let menuIndex = 1, shopIndex = 0, shopTab = 'balls';
+let particleTime = 0;
+let resultReward = 0, resultTrophies = 0, resultXP = 0, resultIsRecord = false, resultPercent = 0, resultBossKilled = false;
+let slowTimer = 0, wideTimer = 0, freezeTimer = 0;
+let basePaddleW = 120;
+let ballLaunched = false;
+let lastHitTime = 0;
+let bossTrophyReward = 0;
+let passScroll = 0;
+
+const diffKeys = ['easy', 'medium', 'hard'];
+const keys = { left: false, right: false, vleft: false, vright: false };
+let buttons = [];
+function setButtons(list) { buttons = list; }
+function hitButton(x, y) {
+  for (const b of buttons) if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b.id;
+  return null;
+}
+
+/* ============================================================
+   6. СОХРАНЕНИЕ
+   ============================================================ */
+function loadRecords() { try { return { easy: 0, medium: 0, hard: 0, ...JSON.parse(localStorage.getItem('bb_records') || '{}') }; } catch { return { easy: 0, medium: 0, hard: 0 }; } }
+function saveRecords() { try { localStorage.setItem('bb_records', JSON.stringify(record)); } catch {} }
+function loadStars() { try { return parseInt(localStorage.getItem('bb_stars') || '0') || 0; } catch { return 0; } }
+function saveStars() { try { localStorage.setItem('bb_stars', String(stars)); } catch {} }
+function loadOwnedBalls() { try { const a = JSON.parse(localStorage.getItem('bb_owned_balls') || '["classic"]'); return Array.isArray(a) && a.length ? a : ['classic']; } catch { return ['classic']; } }
+function saveOwnedBalls() { try { localStorage.setItem('bb_owned_balls', JSON.stringify(ownedBalls)); } catch {} }
+function loadOwnedSkins() { try { const a = JSON.parse(localStorage.getItem('bb_owned_skins') || '["classic"]'); return Array.isArray(a) && a.length ? a : ['classic']; } catch { return ['classic']; } }
+function saveOwnedSkins() { try { localStorage.setItem('bb_owned_skins', JSON.stringify(ownedSkins)); } catch {} }
+function loadCurrentBall() { try { const b = localStorage.getItem('bb_current_ball') || 'classic'; return BALLS[b] ? b : 'classic'; } catch { return 'classic'; } }
+function saveCurrentBall() { try { localStorage.setItem('bb_current_ball', currentBall); } catch {} }
+function loadCurrentSkin() { try { const s = localStorage.getItem('bb_current_skin') || 'classic'; return PADDLE_SKINS[s] ? s : 'classic'; } catch { return 'classic'; } }
+function saveCurrentSkin() { try { localStorage.setItem('bb_current_skin', currentSkin); } catch {} }
+function loadTrophies() { try { const t = JSON.parse(localStorage.getItem('bb_trophies') || '{}'); return { total: t.total || 0, wins: t.wins || {}, bosses: t.bosses || {} }; } catch { return { total: 0, wins: {}, bosses: {} }; } }
+function saveTrophies() { try { localStorage.setItem('bb_trophies', JSON.stringify(trophies)); } catch {} }
+function loadProfile() { try { return { nick: 'Игрок', avatar: null, ...JSON.parse(localStorage.getItem('bb_profile') || '{}') }; } catch { return { nick: 'Игрок', avatar: null }; } }
+function saveProfile() { try { localStorage.setItem('bb_profile', JSON.stringify(profile)); } catch {} }
+function loadDaily() { try { return localStorage.getItem('bb_daily') || ''; } catch { return ''; } }
+function saveDaily(d) { try { localStorage.setItem('bb_daily', d); } catch {} }
+function loadSavedGame() { try { return JSON.parse(localStorage.getItem('bb_saved_game') || 'null'); } catch { return null; } }
+function saveGame() {
+  if (state !== 'playing' || !paddle) return;
+  try {
+    localStorage.setItem('bb_saved_game', JSON.stringify({
+      difficulty, score, lives,
+      paddleX: paddle.x, paddleW: paddle.w,
+      bricks: bricks.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h, color: b.color, alive: b.alive, special: b.special })),
+      boss: boss ? { hp: boss.hp, maxHp: boss.maxHp } : null,
+      timestamp: Date.now()
+    }));
+  } catch {}
+}
+function clearSavedGame() { try { localStorage.removeItem('bb_saved_game'); } catch {} }
+function loadPass() {
+  try { return { xp: 0, level: 1, claimed: [], premium: false, ...JSON.parse(localStorage.getItem('bb_pass') || '{}') }; }
+  catch { return { xp: 0, level: 1, claimed: [], premium: false }; }
+}
+function savePass() { try { localStorage.setItem('bb_pass', JSON.stringify(pass)); } catch {} }
+let pass = loadPass();
+
+function updateHUD() {
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+  starsEl.textContent = stars;
+  trophyEl.textContent = trophies.total;
+  recordEl.textContent = record[difficulty] || 0;
+  updateXPBar();
+}
+function updateXPBar() {
+  if (pass.level >= 30 && pass.xp >= xpForLevel(30)) {
+    xpFill.style.width = '100%';
+  } else {
+    const req = xpForLevel(pass.level);
+    const pct = Math.min(100, (pass.xp / req) * 100);
+    xpFill.style.width = pct + '%';
+  }
+}
+function checkRecord() {
+  if (score > (record[difficulty] || 0)) { record[difficulty] = score; saveRecords(); return true; }
+  return false;
+}
+
+/* ============================================================
+   7. ПРОПУСК (ИСПРАВЛЕНО: награды теперь выдаются автоматически)
+   ============================================================ */
+const PASS_LEVELS = 30;
+function xpForLevel(level) { return 100 + (level - 1) * 50; }
+
+function generatePassRewards() {
+  const rewards = [];
+  for (let i = 1; i <= PASS_LEVELS; i++) {
+    const isMajor = i % 5 === 0;
+    const isMid = i % 3 === 0 && !isMajor;
+    const free = { type: 'stars', amount: isMajor ? 30 : isMid ? 10 : 5 };
+    let premium;
+    if (isMajor) {
+      const ballList = ['neon', 'ghost', 'rainbow', 'star', 'void', 'lightning'];
+      const ballIdx = Math.min(5, Math.floor(i / 5) - 1);
+      premium = { type: 'ball', amount: 1, ballKey: ballList[ballIdx] };
+    } else if (isMid) {
+      const skinList = ['gold', 'emerald', 'ruby', 'cosmic', 'ice', 'lava'];
+      const skinIdx = Math.min(5, Math.floor(i / 3) - 1);
+      premium = { type: 'skin', amount: 1, skinKey: skinList[skinIdx] };
+    } else {
+      premium = { type: 'stars', amount: 15 };
+    }
+    rewards.push({ level: i, free, premium });
+  }
+  return rewards;
+}
+const passRewards = generatePassRewards();
+
+// Выдать конкретную награду
+function giveReward(r) {
+  let given = null;
+  if (r.type === 'stars') {
+    stars += r.amount;
+    saveStars();
+    given = `+${r.amount} ⭐`;
+  } else if (r.type === 'ball' && r.ballKey) {
+    if (!ownedBalls.includes(r.ballKey)) {
+      ownedBalls.push(r.ballKey);
+      saveOwnedBalls();
+      given = `Шар: ${BALLS[r.ballKey].name}`;
+    }
+  } else if (r.type === 'skin' && r.skinKey) {
+    if (!ownedSkins.includes(r.skinKey)) {
+      ownedSkins.push(r.skinKey);
+      saveOwnedSkins();
+      given = `Скин: ${PADDLE_SKINS[r.skinKey].name}`;
+    }
+  }
+  return given;
+}
+
+// Автовыдача всех наград, которые открыты, но не забраны
+function autoClaimAvailableRewards() {
+  let count = 0;
+  let summary = [];
+  for (let lvl = 1; lvl <= pass.level; lvl++) {
+    // Free
+    const fKey = 'F' + lvl;
+    if (!pass.claimed.includes(fKey)) {
+      const given = giveReward(passRewards[lvl - 1].free);
+      if (given) { summary.push(given); count++; }
+      pass.claimed.push(fKey);
+    }
+    // Premium
+    if (pass.premium) {
+      const pKey = 'P' + lvl;
+      if (!pass.claimed.includes(pKey)) {
+        const given = giveReward(passRewards[lvl - 1].premium);
+        if (given) { summary.push(given); count++; }
+        pass.claimed.push(pKey);
+      }
+    }
+  }
+  if (count > 0) {
+    savePass();
+    updateHUD();
+    // Показать всплывашку
+    const text = summary.slice(0, 3).join(', ') + (summary.length > 3 ? `... +${summary.length - 3}` : '');
+    showToast(`🎁 Получено: ${text}`);
+    sndTrophy();
+  }
+  return count;
+}
+
+function addXP(amount) {
+  pass.xp += amount;
+  let leveledUp = false;
+  while (pass.level < PASS_LEVELS && pass.xp >= xpForLevel(pass.level)) {
+    pass.xp -= xpForLevel(pass.level);
+    pass.level++;
+    leveledUp = true;
+  }
+  if (pass.level >= PASS_LEVELS) pass.xp = Math.min(pass.xp, xpForLevel(PASS_LEVELS));
+  savePass();
+  updateXPBar();
+  if (leveledUp) {
+    vibrate(80);
+    // Автоматически выдаём все награды за достигнутые уровни
+    autoClaimAvailableRewards();
+  }
+}
+
+function claimAllAvailable() {
+  autoClaimAvailableRewards();
+}
+
+function buyPremiumPass() {
+  if (pass.premium) return;
+  if (stars < 200) { showToast('Нужно 200 ⭐'); return; }
+  stars -= 200; pass.premium = true;
+  saveStars(); savePass(); updateHUD(); sndTrophy();
+  showToast('💎 Премиум-пропуск активирован!');
+  autoClaimAvailableRewards();
+}
+function getSeasonBoss(diffKey) {
+  const diffIndex = diffKeys.indexOf(diffKey);
+  return SEASONS[currentSeasonId - 1].bosses[diffIndex];
+}
+
+/* ============================================================
+   8. ЗВУК
+   ============================================================ */
+let audioCtx = null;
+function initAudio() {
+  if (audioCtx) return;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+}
+function playTone(freq, duration, type = 'square', vol = 0.08) {
+  if (!audioCtx) return;
+  try {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + duration);
+  } catch {}
+}
+function sndHit()     { playTone(440, 0.05, 'square', 0.06); }
+function sndBrick()   { playTone(700, 0.06, 'square', 0.05); }
+function sndSpecial() { playTone(900, 0.15, 'sine', 0.08); setTimeout(() => playTone(1200, 0.15, 'sine', 0.08), 80); }
+function sndLose()    { playTone(200, 0.3, 'sawtooth', 0.1); }
+function sndWin()     { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => playTone(f, 0.2, 'sine', 0.1), i * 100)); }
+function sndBoss()    { playTone(150, 0.4, 'sawtooth', 0.12); }
+function sndTrophy()  { [800, 1000, 1300, 1600].forEach((f, i) => setTimeout(() => playTone(f, 0.15, 'triangle', 0.09), i * 70)); }
+function vibrate(ms) { if (navigator.vibrate) { try { navigator.vibrate(ms); } catch {} } }
+
+/* ============================================================
+   9. ПРОФИЛЬ
+   ============================================================ */
+fileInput.addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      const size = 128;
+      c.width = size; c.height = size;
+      const cx2 = c.getContext('2d');
+      const s = Math.min(img.width, img.height);
+      cx2.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+      profile.avatar = c.toDataURL('image/jpeg', 0.8);
+      saveProfile();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(f);
+  fileInput.value = '';
+});
+
+/* ============================================================
+   10. ЧАСТИЦЫ
+   ============================================================ */
+function spawnParticles(x, y, color, count = 8, speed = 3) {
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const sp = 1 + Math.random() * speed;
+    particles.push({
+      x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+      life: 1, color, size: 2 + Math.random() * 3
+    });
+  }
+}
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1;
+    p.life -= 0.03;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+/* ============================================================
+   11. ИНИЦИАЛИЗАЦИЯ ИГРЫ
+   ============================================================ */
+function makeBall() {
+  return { x: W / 2 - 6, y: H - 60, size: 12, dx: 0, dy: 0, trail: [], attached: true };
+}
+function positionAttachedBalls() {
+  if (!paddle || !balls) return;
+  const attached = balls.filter(b => b.attached);
+  const n = attached.length;
+  attached.forEach((b, i) => {
+    const t = n === 1 ? 0.5 : (i + 0.5) / n;
+    b.x = paddle.x + paddle.w * t - b.size / 2;
+    b.y = paddle.y - b.size - 1;
+  });
+}
+function startGame(diffKey) {
+  initAudio();
+  clearSavedGame();
+  difficulty = diffKey;
+  currentDiff = DIFFICULTIES[diffKey];
+  basePaddleW = currentDiff.paddleW;
+  paddle = { x: W / 2 - basePaddleW / 2, y: H - 40, w: basePaddleW, h: 15, speed: 9 };
+  const b = makeBall(); b.attached = true;
+  balls = [b];
+  ballLaunched = false;
+  positionAttachedBalls();
+  bricks = createBricks();
+  boss = currentDiff.hasBoss ? createBoss() : null;
+  bossBullets = [];
+  particles = [];
+  score = 0; lives = currentDiff.lives;
+  state = 'playing';
+  resultReward = 0; resultTrophies = 0; resultXP = 0; resultIsRecord = false;
+  resultPercent = 0; resultBossKilled = false; bossTrophyReward = 0;
+  slowTimer = 0; wideTimer = 0; freezeTimer = 0;
+  updateHUD();
+}
+function resumeSavedGame() {
+  if (!savedGame) return;
+  initAudio();
+  difficulty = savedGame.difficulty;
+  currentDiff = DIFFICULTIES[difficulty];
+  basePaddleW = currentDiff.paddleW;
+  paddle = { x: savedGame.paddleX, y: H - 40, w: savedGame.paddleW, h: 15, speed: 9 };
+  const b = makeBall(); b.attached = true;
+  balls = [b]; ballLaunched = false;
+  positionAttachedBalls();
+  bricks = savedGame.bricks.map(b => ({ ...b, anim: Math.random() * Math.PI * 2, dying: 0 }));
+  boss = savedGame.boss ? { ...createBoss(), hp: savedGame.boss.hp, maxHp: savedGame.boss.maxHp } : null;
+  bossBullets = [];
+  particles = [];
+  score = savedGame.score; lives = savedGame.lives;
+  state = 'playing';
+  resultReward = 0; resultTrophies = 0; resultXP = 0;
+  resultBossKilled = false; bossTrophyReward = 0;
+  slowTimer = 0; wideTimer = 0; freezeTimer = 0;
+  clearSavedGame();
+  updateHUD();
+}
+function createBricks() {
+  const arr = [];
+  const offsetY = 60;
+  const rows = currentDiff.rows;
+  const startColor = diffKeys.indexOf(difficulty) * 2;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < BRICK_COLS; col++) {
+      let special = null;
+      if (row > 0 && Math.random() < 0.18) {
+        special = SPECIAL_KEYS[Math.floor(Math.random() * SPECIAL_KEYS.length)];
+      }
+      arr.push({
+        x: col * BRICK_W + 2, y: offsetY + row * BRICK_H + 2,
+        w: BRICK_W - 4, h: BRICK_H - 4,
+        color: ROW_COLORS[(row + startColor) % ROW_COLORS.length],
+        alive: true, special, anim: Math.random() * Math.PI * 2, dying: 0
+      });
+    }
+  }
+  return arr;
+}
+function createBoss() {
+  const sb = getSeasonBoss(difficulty);
+  return {
+    hp: sb.hp, maxHp: sb.hp,
+    x: W / 2 - 80, y: 65, w: 160, h: 50,
+    dx: sb.speed * (Math.random() < 0.5 ? -1 : 1),
+    speed: sb.speed, anim: 0, name: sb.name, color: sb.color,
+    attack: sb.attack, trophy: sb.trophy,
+    hitFlash: 0, shootCooldown: 120, rageMode: false
+  };
+}
+
+/* ============================================================
+   12. КЛАВИАТУРА
+   ============================================================ */
+document.addEventListener('keydown', e => {
+  if (state === 'menu') {
+    if (e.key === 'ArrowLeft' || e.key === 'a') menuIndex = Math.max(0, menuIndex - 1);
+    if (e.key === 'ArrowRight' || e.key === 'd') menuIndex = Math.min(2, menuIndex + 1);
+    if (e.key === 'Enter' || e.key === ' ') { if (savedGame) resumeSavedGame(); else startGame(diffKeys[menuIndex]); e.preventDefault(); }
+    if (e.key === 's' || e.key === 'S') { state = 'shop'; shopIndex = 0; }
+    if (e.key === 'p' || e.key === 'P') state = 'profile';
+    if (e.key === 't' || e.key === 'T') state = 'trophies';
+    if (e.key === 'b' || e.key === 'B') { state = 'pass'; passScroll = Math.max(0, pass.level - 3); }
+    return;
+  }
+  if (state === 'shop') {
+    if (e.key === 'ArrowLeft' || e.key === 'a') shopIndex = Math.max(0, shopIndex - 1);
+    if (e.key === 'ArrowRight' || e.key === 'd') shopIndex = Math.min((shopTab === 'balls' ? BALL_KEYS.length : SKIN_KEYS.length) - 1, shopIndex + 1);
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (shopTab === 'balls') buyOrEquipBall(BALL_KEYS[shopIndex]);
+      else buyOrEquipSkin(SKIN_KEYS[shopIndex]);
+      e.preventDefault();
+    }
+    if (e.key === 'Escape' || e.key === 'm') state = 'menu';
+    if (e.key === 'Tab') { shopTab = shopTab === 'balls' ? 'skins' : 'balls'; shopIndex = 0; e.preventDefault(); }
+    return;
+  }
+  if (state === 'pass') {
+    if (e.key === 'ArrowLeft' || e.key === 'a') passScroll = Math.max(0, passScroll - 1);
+    if (e.key === 'ArrowRight' || e.key === 'd') passScroll = Math.min(PASS_LEVELS - 1, passScroll + 1);
+    if (e.key === 'Escape' || e.key === 'm' || e.key === 'b') state = 'menu';
+    return;
+  }
+  if (state === 'profile' || state === 'trophies') {
+    if (e.key === 'Escape' || e.key === 'm') state = 'menu';
+    return;
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = true;
+  if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+  if (e.key === ' ') { if (state === 'win' || state === 'lose') startGame(difficulty); e.preventDefault(); }
+  if (e.key === 'Escape' || e.key === 'm' || e.key === 'M') { saveGame(); state = 'menu'; e.preventDefault(); }
+  if (e.key === 's' || e.key === 'S') { saveGame(); state = 'shop'; shopIndex = 0; e.preventDefault(); }
+  if (e.key === 'b' || e.key === 'B') { saveGame(); state = 'pass'; passScroll = Math.max(0, pass.level - 3); e.preventDefault(); }
+  if (['ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+});
+document.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+  if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+});
+
+/* ============================================================
+   13. МЫШЬ / ТАЧ
+   ============================================================ */
+function getCanvasPos(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: (clientX - rect.left) * (W / rect.width), y: (clientY - rect.top) * (H / rect.height) };
+}
+function movePaddleToCanvasX(cx) {
+  if (state !== 'playing' || !paddle) return;
+  const oldX = paddle.x;
+  paddle.x = Math.max(0, Math.min(W - paddle.w, cx - paddle.w / 2));
+  if (paddle.x !== oldX && !ballLaunched) launchBalls();
+  if (!ballLaunched) positionAttachedBalls();
+}
+function handleTapAt(x, y) {
+  const btn = hitButton(x, y);
+  if (btn) { handleButton(btn, x, y); return; }
+  if (state === 'win' || state === 'lose') startGame(difficulty);
+}
+let mouseDown = false, mouseMoved = false, mouseStart = { x: 0, y: 0 };
+canvas.addEventListener('mousedown', e => {
+  const p = getCanvasPos(e.clientX, e.clientY);
+  mouseDown = true; mouseMoved = false; mouseStart = p;
+  if (state === 'playing') movePaddleToCanvasX(p.x);
+  e.preventDefault();
+});
+canvas.addEventListener('mousemove', e => {
+  if (state !== 'playing') return;
+  if (mouseDown) { const p = getCanvasPos(e.clientX, e.clientY); mouseMoved = true; movePaddleToCanvasX(p.x); }
+});
+document.addEventListener('mouseup', e => {
+  if (!mouseDown) return;
+  mouseDown = false;
+  const p = getCanvasPos(e.clientX, e.clientY);
+  if (!mouseMoved) handleTapAt(p.x, p.y);
+  mouseMoved = false;
+});
+canvas.addEventListener('mouseleave', () => { mouseDown = false; mouseMoved = false; });
+
+let touchStart = { x: 0, y: 0 }, touchMoved = false, touchActive = false;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); if (!e.touches.length) return;
+  const t = e.touches[0]; const p = getCanvasPos(t.clientX, t.clientY);
+  touchActive = true; touchMoved = false; touchStart = p;
+  if (state === 'playing') movePaddleToCanvasX(p.x);
+  else handleTapAt(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault(); if (!touchActive || !e.touches.length) return;
+  const t = e.touches[0]; const p = getCanvasPos(t.clientX, t.clientY);
+  if (Math.abs(p.x - touchStart.x) > 8 || Math.abs(p.y - touchStart.y) > 8) touchMoved = true;
+  if (state === 'playing') movePaddleToCanvasX(p.x);
+  else if (state === 'pass' && touchMoved) {
+    const dx = p.x - touchStart.x;
+    if (Math.abs(dx) > 40) {
+      passScroll = Math.max(0, Math.min(PASS_LEVELS - 1, passScroll - Math.sign(dx)));
+      touchStart = p;
+    }
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault(); if (!touchActive) return;
+  touchActive = false;
+  if (!touchMoved && state !== 'playing') handleTapAt(touchStart.x, touchStart.y);
+  touchMoved = false;
+}, { passive: false });
+canvas.addEventListener('touchcancel', () => { touchActive = false; touchMoved = false; });
+
+/* ============================================================
+   14. КНОПКИ
+   ============================================================ */
+function handleButton(id, x, y) {
+  if (id === 'vleft')  { keys.vleft = true;  setTimeout(() => keys.vleft = false, 120); return; }
+  if (id === 'vright') { keys.vright = true; setTimeout(() => keys.vright = false, 120); return; }
+
+  if (id === 'open_pass') { state = 'pass'; passScroll = Math.max(0, pass.level - 3); autoClaimAvailableRewards(); return; }
+  if (id === 'pass_back') { state = 'menu'; return; }
+  if (id === 'pass_buy_premium') { buyPremiumPass(); return; }
+  if (id === 'pass_claim_all') { claimAllAvailable(); return; }
+  if (id === 'pass_scroll_left') { passScroll = Math.max(0, passScroll - 1); return; }
+  if (id === 'pass_scroll_right') { passScroll = Math.min(PASS_LEVELS - 1, passScroll + 1); return; }
+
+  switch (id) {
+    case 'diff_easy': menuIndex = 0; startGame('easy'); break;
+    case 'diff_medium': menuIndex = 1; startGame('medium'); break;
+    case 'diff_hard': menuIndex = 2; startGame('hard'); break;
+    case 'resume_game': resumeSavedGame(); break;
+    case 'open_shop': state = 'shop'; shopIndex = 0; shopTab = 'balls'; break;
+    case 'open_profile': state = 'profile'; break;
+    case 'open_trophies': state = 'trophies'; break;
+    case 'claim_daily': claimDaily(); break;
+    case 'game_menu': saveGame(); state = 'menu'; break;
+    case 'game_shop': saveGame(); state = 'shop'; shopIndex = 0; break;
+    case 'shop_back': state = 'menu'; break;
+    case 'shop_tab_balls': shopTab = 'balls'; shopIndex = 0; break;
+    case 'shop_tab_skins': shopTab = 'skins'; shopIndex = 0; break;
+    case 'shop_item_ball': {
+      const idx = findShopItem(x, y, BALL_KEYS.length);
+      if (idx >= 0) { shopIndex = idx; buyOrEquipBall(BALL_KEYS[idx]); }
+      break;
+    }
+    case 'shop_item_skin': {
+      const idx = findShopItem(x, y, SKIN_KEYS.length);
+      if (idx >= 0) { shopIndex = idx; buyOrEquipSkin(SKIN_KEYS[idx]); }
+      break;
+    }
+    case 'profile_back': state = 'menu'; break;
+    case 'profile_avatar': fileInput.click(); break;
+    case 'profile_nick': editNickname(); break;
+    case 'profile_reset': if (confirm('Сбросить профиль?')) { profile = { nick: 'Игрок', avatar: null }; saveProfile(); } break;
+    case 'trophies_back': state = 'menu'; break;
+    case 'result_restart': startGame(difficulty); break;
+    case 'result_menu': state = 'menu'; break;
+  }
+}
+function findShopItem(x, y, total) {
+  const cols = 4, cardW = 170, cardH = 195, gapX = 15, gapY = 18;
+  const totalW = cardW * cols + gapX * (cols - 1);
+  const startX = (W - totalW) / 2;
+  const startY = 130;
+  for (let i = 0; i < total; i++) {
+    const col = i % cols, row = Math.floor(i / cols);
+    const bx = startX + col * (cardW + gapX);
+    const by = startY + row * (cardH + gapY);
+    if (x >= bx && x <= bx + cardW && y >= by && y <= by + cardH) return i;
+  }
+  return -1;
+}
+function editNickname() {
+  const v = prompt('Введите никнейм:', profile.nick);
+  if (v !== null && v.trim().length > 0) {
+    profile.nick = v.slice(0, 24);
+    saveProfile();
+  }
+}
+function claimDaily() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (lastDailyDate === today) return;
+  lastDailyDate = today; saveDaily(today);
+  const reward = 5 + Math.floor(Math.random() * 16);
+  stars += reward; saveStars(); updateHUD();
+  sndTrophy();
+  showToast(`🎁 Ежедневная награда: +${reward} ⭐`);
+}
+
+/* ============================================================
+   15. ПОКУПКА / ЭКИПИРОВКА
+   ============================================================ */
+function buyOrEquipBall(key) {
+  const b = BALLS[key];
+  if (ownedBalls.includes(key)) { currentBall = key; saveCurrentBall(); return; }
+  if (stars >= b.price) {
+    stars -= b.price; ownedBalls.push(key); currentBall = key;
+    saveStars(); saveOwnedBalls(); saveCurrentBall(); updateHUD(); sndSpecial();
+    showToast(`Куплен шар: ${b.name}`);
+  }
+}
+function buyOrEquipSkin(key) {
+  const s = PADDLE_SKINS[key];
+  if (ownedSkins.includes(key)) { currentSkin = key; saveCurrentSkin(); return; }
+  if (stars >= s.price) {
+    stars -= s.price; ownedSkins.push(key); currentSkin = key;
+    saveStars(); saveOwnedSkins(); saveCurrentSkin(); updateHUD(); sndSpecial();
+    showToast(`Куплен скин: ${s.name}`);
+  }
+}
+
+/* ============================================================
+   16. СПЕЦ-ЭФФЕКТЫ
+   ============================================================ */
+function applySpecial(type, brick) {
+  sndSpecial();
+  switch (type) {
+    case 'multi': {
+      if (balls.length === 0) break;
+      const sample = balls[0];
+      const speed = currentDiff.ballSpeed * (slowTimer > 0 ? 0.6 : 1);
+      [-Math.PI * 0.75, -Math.PI * 0.25].forEach(ang => {
+        let dx = Math.cos(ang) * speed, dy = Math.sin(ang) * speed;
+        if (Math.abs(dx) < 1.5) dx = dx < 0 ? -1.5 : 1.5;
+        balls.push({ x: sample.x, y: sample.y, size: sample.size, dx, dy, trail: [], attached: false });
+      });
+      break;
+    }
+    case 'teleport': {
+      for (const b of balls) {
+        if (b.attached) continue;
+        b.x = 40 + Math.random() * (W - 80 - b.size);
+        b.y = 100 + Math.random() * (H * 0.5);
+        let t = 0;
+        while (t < 20 && bricks.some(br => br.alive && b.x < br.x + br.w && b.x + b.size > br.x && b.y < br.y + br.h && b.y + b.size > br.y)) {
+          b.x = 40 + Math.random() * (W - 80 - b.size);
+          b.y = 100 + Math.random() * (H * 0.5);
+          t++;
+        }
+      }
+      break;
+    }
+    case 'slow': slowTimer = 8 * 60; break;
+    case 'wide': wideTimer = 10 * 60; break;
+    case 'life': lives++; updateHUD(); break;
+    case 'star': stars += 5; saveStars(); updateHUD(); break;
+    case 'bomb': {
+      const cx = brick.x + brick.w / 2, cy = brick.y + brick.h / 2;
+      spawnParticles(cx, cy, '#ff6600', 25, 6);
+      vibrate(40);
+      for (const br of bricks) {
+        if (!br.alive) continue;
+        const bx = br.x + br.w / 2, by = br.y + br.h / 2;
+        if (Math.abs(bx - cx) < BRICK_W * 1.5 && Math.abs(by - cy) < BRICK_H * 1.5) {
+          br.alive = false; br.dying = 1;
+          score += 10 * currentDiff.scoreMultiplier;
+          spawnParticles(bx, by, br.color, 6, 3);
+        }
+      }
+      updateHUD();
+      break;
+    }
+    case 'freeze': freezeTimer = 3 * 60; break;
+  }
+}
+
+/* ============================================================
+   17. ЗАПУСК МЯЧА
+   ============================================================ */
+function launchBalls() {
+  if (ballLaunched) return;
+  ballLaunched = true;
+  const sp = currentDiff.ballSpeed;
+  balls.forEach((b, i) => {
+    if (!b.attached) return;
+    b.attached = false;
+    const cx = paddle.x + paddle.w / 2;
+    b.x = cx - b.size / 2; b.y = paddle.y - b.size - 1;
+    const spread = (i - (balls.length - 1) / 2) * 0.35;
+    const angle = -Math.PI / 2 + spread + (Math.random() - 0.5) * 0.15;
+    b.dx = Math.cos(angle) * sp;
+    b.dy = Math.sin(angle) * sp;
+    if (Math.abs(b.dx) < 1.5) b.dx = b.dx < 0 ? -1.5 : 1.5;
+  });
+}
+
+/* ============================================================
+   18. БОСС
+   ============================================================ */
+function updateBoss() {
+  if (!boss) return;
+  boss.anim += 0.06;
+  boss.x += boss.dx;
+  if (boss.x <= 0 || boss.x + boss.w >= W) boss.dx *= -1;
+  if (boss.hitFlash > 0) boss.hitFlash -= 0.05;
+  if (boss.hp < boss.maxHp * 0.3 && !boss.rageMode) {
+    boss.rageMode = true;
+    boss.dx *= 1.5;
+    sndBoss();
+  }
+  if (boss.attack === 'shoot' || boss.rageMode) {
+    boss.shootCooldown--;
+    if (boss.shootCooldown <= 0) {
+      const speed = boss.rageMode ? 4 : 3;
+      bossBullets.push({
+        x: boss.x + boss.w / 2 - 5, y: boss.y + boss.h,
+        size: 10, dx: (Math.random() - 0.5) * 2, dy: speed, color: boss.color
+      });
+      boss.shootCooldown = boss.rageMode ? 90 : 150;
+    }
+  }
+}
+function updateBossBullets() {
+  for (let i = bossBullets.length - 1; i >= 0; i--) {
+    const b = bossBullets[i];
+    b.x += b.dx; b.y += b.dy;
+    if (b.y + b.size >= paddle.y && b.y <= paddle.y + paddle.h && b.x + b.size >= paddle.x && b.x <= paddle.x + paddle.w) {
+      bossBullets.splice(i, 1);
+      spawnParticles(b.x, b.y, '#ff3232', 8, 3);
+      lives--; updateHUD(); vibrate(80); sndLose();
+      if (lives <= 0) { finishGame(false); return; }
+      continue;
+    }
+    if (b.y > H) bossBullets.splice(i, 1);
+  }
+}
+
+/* ============================================================
+   19. ЛОГИКА
+   ============================================================ */
+function update() {
+  particleTime += 0.05;
+  updateParticles();
+  if (state !== 'playing') return;
+
+  if (slowTimer > 0) slowTimer--;
+  if (freezeTimer > 0) freezeTimer--;
+  if (wideTimer > 0) {
+    wideTimer--;
+    const targetW = basePaddleW * 1.6;
+    if (paddle.w < targetW) { const d = targetW - paddle.w; paddle.x = Math.max(0, paddle.x - d / 2); paddle.w = targetW; }
+  } else {
+    const targetW = basePaddleW;
+    if (paddle.w > targetW) { const d = paddle.w - targetW; paddle.x = Math.max(0, paddle.x + d / 2); paddle.w = targetW; }
+  }
+
+  let movedByKeys = false;
+  const oldX = paddle.x;
+  if (keys.left)   paddle.x = Math.max(0, paddle.x - paddle.speed);
+  if (keys.right)  paddle.x = Math.min(W - paddle.w, paddle.x + paddle.speed);
+  if (keys.vleft)  paddle.x = Math.max(0, paddle.x - paddle.speed);
+  if (keys.vright) paddle.x = Math.min(W - paddle.w, paddle.x + paddle.speed);
+  if (paddle.x !== oldX) movedByKeys = true;
+  if (movedByKeys && !ballLaunched) launchBalls();
+  if (!ballLaunched) positionAttachedBalls();
+
+  updateBoss();
+  updateBossBullets();
+
+  for (const br of bricks) {
+    if (br.dying > 0) { br.dying -= 0.06; if (br.dying <= 0) br.dying = 0; }
+  }
+
+  const speedMult = slowTimer > 0 ? 0.6 : 1;
+  const frozen = freezeTimer > 0;
+
+  for (let i = balls.length - 1; i >= 0; i--) {
+    const b = balls[i];
+    if (b.attached) continue;
+    if (!frozen) { b.x += b.dx * speedMult; b.y += b.dy * speedMult; }
+    b.trail.push({ x: b.x + b.size / 2, y: b.y + b.size / 2, life: 1 });
+    if (b.trail.length > 18) b.trail.shift();
+    for (const t of b.trail) t.life -= 0.06;
+    if (b.x <= 0) { b.x = 0; b.dx = Math.abs(b.dx); }
+    if (b.x + b.size >= W) { b.x = W - b.size; b.dx = -Math.abs(b.dx); }
+    if (b.y <= 50) { b.y = 50; b.dy = Math.abs(b.dy); }
+    const bcx = b.x + b.size / 2;
+    if (b.dy > 0 && b.y + b.size >= paddle.y && b.y + b.size <= paddle.y + paddle.h + 10 && bcx >= paddle.x && bcx <= paddle.x + paddle.w) {
+      b.y = paddle.y - b.size;
+      b.dy = -Math.abs(b.dy);
+      const hit = (bcx - (paddle.x + paddle.w / 2)) / (paddle.w / 2);
+      b.dx = hit * currentDiff.ballSpeed * 1.3;
+      if (Math.abs(b.dx) < 2) b.dx = b.dx < 0 ? -2 : 2;
+      if (Date.now() - lastHitTime > 60) { sndHit(); vibrate(10); lastHitTime = Date.now(); }
+    }
+    if (boss && b.x < boss.x + boss.w && b.x + b.size > boss.x && b.y < boss.y + boss.h && b.y + b.size > boss.y) {
+      boss.hp--; boss.hitFlash = 0.5;
+      b.y = boss.y + boss.h + 2; b.dy = Math.abs(b.dy);
+      spawnParticles(boss.x + boss.w / 2, boss.y + boss.h / 2, boss.color, 15, 4);
+      sndBoss(); vibrate(30);
+      if (boss.hp <= 0) {
+        spawnParticles(boss.x + boss.w / 2, boss.y + boss.h / 2, '#ffd700', 40, 8);
+        sndTrophy();
+        bossTrophyReward = boss.trophy;
+        for (const br of bricks) { if (br.alive) { br.alive = false; br.dying = 1; score += 5 * currentDiff.scoreMultiplier; } }
+        resultBossKilled = true;
+        addXP(50 + boss.trophy * 10);
+        bossBullets = [];
+        boss = null;
+        updateHUD();
+      }
+      break;
+    }
+    for (const br of bricks) {
+      if (!br.alive) continue;
+      if (b.x < br.x + br.w && b.x + b.size > br.x && b.y < br.y + br.h && b.y + b.size > br.y) {
+        br.alive = false; br.dying = 1;
+        score += 10 * currentDiff.scoreMultiplier;
+        spawnParticles(br.x + br.w / 2, br.y + br.h / 2, br.color, 8, 3);
+        updateHUD();
+        if (br.special) applySpecial(br.special, br);
+        const ol = (b.x + b.size) - br.x, or_ = (br.x + br.w) - b.x;
+        const ot = (b.y + b.size) - br.y, ob = (br.y + br.h) - b.y;
+        const min = Math.min(ol, or_, ot, ob);
+        if (min === ol || min === or_) b.dx *= -1; else b.dy *= -1;
+        if (Date.now() - lastHitTime > 40) { sndBrick(); lastHitTime = Date.now(); }
+        break;
+      }
+    }
+    if (b.y > H) balls.splice(i, 1);
+  }
+
+  if (balls.length === 0) {
+    lives--; updateHUD(); sndLose(); vibrate(50);
+    if (lives <= 0) finishGame(false);
+    else {
+      ballLaunched = false;
+      paddle.w = basePaddleW; paddle.x = W / 2 - paddle.w / 2;
+      const nb = makeBall(); nb.attached = true;
+      balls = [nb];
+      positionAttachedBalls();
+    }
+  }
+
+  if (bricks.every(br => !br.alive) && !boss) finishGame(true);
+}
+
+function calcReward() {
+  const total = bricks.length;
+  const broken = bricks.filter(b => !b.alive).length;
+  const percent = total > 0 ? broken / total : 0;
+  resultPercent = Math.round(percent * 100);
+  if (percent >= 0.999) return currentDiff.rewardFull;
+  if (percent >= 0.5) {
+    const min = currentDiff.rewardHalfMin, max = currentDiff.rewardHalfMax;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+  if (broken > 0) return 1;
+  return 0;
+}
+function finishGame(win) {
+  resultIsRecord = checkRecord();
+  resultReward = calcReward();
+  stars += resultReward;
+
+  resultXP = resultReward * 2 + Math.floor(score / 100);
+  if (win) resultXP += 25;
+  if (resultBossKilled) resultXP += 50;
+  addXP(resultXP);
+
+  resultTrophies = 0;
+  if (win) {
+    resultTrophies += 1;
+    trophies.wins[difficulty] = (trophies.wins[difficulty] || 0) + 1;
+    if (resultBossKilled) {
+      resultTrophies += bossTrophyReward;
+      trophies.bosses[difficulty] = (trophies.bosses[difficulty] || 0) + 1;
+    }
+    trophies.total += resultTrophies;
+    saveTrophies();
+  }
+  saveStars();
+  updateHUD();
+  state = win ? 'win' : 'lose';
+  if (win) sndWin(); else sndLose();
+  clearSavedGame();
+}
+
+/* ============================================================
+   20. ОТРИСОВКА МЯЧА (с новыми анимациями)
+   ============================================================ */
+function drawOneBall(b) {
+  const cx = b.x + b.size / 2, cy = b.y + b.size / 2, r = b.size / 2;
+  const bd = BALLS[currentBall];
+
+  // Шлейф для шлейфовых
+  if (['plasma', 'fire', 'ghost', 'void', 'vortex', 'dragon', 'galaxy'].includes(bd.anim)) {
+    for (const t of b.trail) {
+      if (t.life <= 0) continue;
+      ctx.beginPath(); ctx.arc(t.x, t.y, r * t.life, 0, Math.PI * 2);
+      ctx.fillStyle = hexA(bd.trailColor, t.life * 0.4); ctx.fill();
+    }
+  }
+
+  switch (bd.anim) {
+    case 'classic':
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.fill();
+      ctx.strokeStyle = bd.trailColor; ctx.lineWidth = 2; ctx.stroke(); break;
+    case 'plasma': {
+      const pulse = 1 + Math.sin(particleTime * 4) * 0.15;
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill(); break;
+    }
+    case 'fire': {
+      for (let i = 0; i < 5; i++) {
+        const ang = particleTime * 3 + i * Math.PI * 2 / 5;
+        const dist = r * (0.6 + Math.sin(particleTime * 6 + i) * 0.4);
+        ctx.beginPath(); ctx.arc(cx + Math.cos(ang) * dist, cy + Math.sin(ang) * dist, r * 0.5, 0, Math.PI * 2);
+        ctx.fillStyle = i % 2 === 0 ? bd.color : bd.trailColor;
+        ctx.shadowColor = bd.color; ctx.shadowBlur = 15; ctx.fill(); ctx.shadowBlur = 0;
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.7, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill(); break;
+    }
+    case 'neon': {
+      const blink = 0.5 + Math.abs(Math.sin(particleTime * 5)) * 0.5;
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 25 * blink;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r * (0.5 + blink * 0.3), 0, Math.PI * 2);
+      ctx.fillStyle = bd.trailColor; ctx.fill(); break;
+    }
+    case 'ghost': {
+      const alpha = 0.4 + Math.abs(Math.sin(particleTime * 2)) * 0.4;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.fill();
+      ctx.strokeStyle = bd.trailColor; ctx.lineWidth = 2; ctx.stroke();
+      ctx.globalAlpha = 1; break;
+    }
+    case 'rainbow': {
+      const hue = (particleTime * 100) % 360;
+      ctx.shadowColor = `hsl(${hue}, 100%, 60%)`; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = `hsl(${hue}, 100%, 60%)`; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2);
+      ctx.fillStyle = `hsl(${(hue + 180) % 360}, 100%, 60%)`; ctx.fill(); break;
+    }
+    case 'star': {
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(particleTime * 3);
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.shadowColor = bd.color; ctx.shadowBlur = 20; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3;
+        ctx.beginPath(); ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * r * 1.4, Math.sin(a) * r * 1.4); ctx.stroke();
+      }
+      ctx.restore(); break;
+    }
+    case 'void': {
+      ctx.shadowColor = bd.trailColor; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = '#000'; ctx.fill();
+      ctx.strokeStyle = bd.trailColor; ctx.lineWidth = 2.5; ctx.stroke(); ctx.shadowBlur = 0;
+      for (let i = 0; i < 4; i++) {
+        const a = particleTime * 2 + i * Math.PI / 2;
+        ctx.beginPath(); ctx.arc(cx + Math.cos(a) * (r + 4), cy + Math.sin(a) * (r + 4), 2, 0, Math.PI * 2);
+        ctx.fillStyle = bd.trailColor; ctx.fill();
+      }
+      break;
+    }
+    case 'lightning': {
+      // Молния с зубцами
+      const pulse = 0.85 + Math.abs(Math.sin(particleTime * 8)) * 0.3;
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.fill(); ctx.shadowBlur = 0;
+      // Зубчатая молния вокруг
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + particleTime * 3;
+        const dist = r + (i % 2 === 0 ? 6 : 2);
+        const px = cx + Math.cos(a) * dist;
+        const py = cy + Math.sin(a) * dist;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      break;
+    }
+    case 'vortex': {
+      // Вращающийся вихрь
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 20;
+      for (let i = 0; i < 3; i++) {
+        const a = particleTime * 4 + i * Math.PI * 2 / 3;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * 4, cy + Math.sin(a) * 4, r * 0.9, 0, Math.PI * 2);
+        ctx.fillStyle = hexA(bd.color, 0.6);
+        ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      break;
+    }
+    case 'crystal': {
+      // Кристалл с гранями
+      const rot = particleTime * 2;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot);
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 20;
+      ctx.fillStyle = bd.color;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3;
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 'dragon': {
+      // Огненный дракон — пульсирующее ядро
+      const pulse = 1 + Math.sin(particleTime * 6) * 0.2;
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = bd.color; ctx.fill(); ctx.shadowBlur = 0;
+      // Огненные лепестки
+      for (let i = 0; i < 6; i++) {
+        const a = particleTime * 3 + i * Math.PI / 3;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * r * 1.4, cy + Math.sin(a) * r * 1.4, r * 0.35, 0, Math.PI * 2);
+        ctx.fillStyle = i % 2 === 0 ? bd.color : bd.trailColor;
+        ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      break;
+    }
+    case 'galaxy': {
+      // Галактика — вращающиеся спирали
+      const rot = particleTime * 1.5;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot);
+      ctx.shadowColor = bd.color; ctx.shadowBlur = 25;
+      for (let arm = 0; arm < 3; arm++) {
+        const baseA = arm * Math.PI * 2 / 3;
+        for (let p = 0; p < 5; p++) {
+          const dist = r * 0.3 + p * (r / 5);
+          const a = baseA + p * 0.5;
+          ctx.beginPath();
+          ctx.arc(Math.cos(a) * dist, Math.sin(a) * dist, 1.5 + p * 0.2, 0, Math.PI * 2);
+          ctx.fillStyle = arm === 0 ? bd.color : (arm === 1 ? bd.trailColor : '#fff');
+          ctx.fill();
+        }
+      }
+      ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.4, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.restore();
+      break;
+    }
+  }
+}
+function hexA(hex, alpha) {
+  const h = hex.replace('#', '');
+  return `rgba(${parseInt(h.substring(0,2),16)},${parseInt(h.substring(2,4),16)},${parseInt(h.substring(4,6),16)},${alpha})`;
+}
+
+/* ============================================================
+   21. ОТРИСОВКА ПЛАТФОРМЫ (с украшениями)
+   ============================================================ */
+function drawPaddle() {
+  if (!paddle) return;
+  const skin = PADDLE_SKINS[currentSkin] || PADDLE_SKINS.classic;
+  const x = paddle.x, y = paddle.y, w = paddle.w, h = paddle.h;
+  const t = particleTime;
+
+  switch (skin.style) {
+    case 'plain': {
+      ctx.fillStyle = skin.color;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      break;
+    }
+    case 'shine': {
+      // Золото с бегущим бликом
+      const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+      grad.addColorStop(0, skin.color);
+      grad.addColorStop(0.5, '#fff8c0');
+      grad.addColorStop(1, skin.color);
+      ctx.fillStyle = grad;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      // Бегущий блик
+      const shineX = x + ((t * 80) % (w + 40)) - 20;
+      ctx.save();
+      ctx.beginPath(); roundRect(x, y, w, h, 8); ctx.clip();
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fillRect(shineX, y, 12, h);
+      ctx.restore();
+      break;
+    }
+    case 'pulse': {
+      // Рубин с пульсацией
+      const pulse = 0.8 + Math.abs(Math.sin(t * 3)) * 0.4;
+      ctx.shadowColor = skin.color; ctx.shadowBlur = 20 * pulse;
+      ctx.fillStyle = skin.color;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      // Красная подсветка изнутри
+      const g2 = ctx.createRadialGradient(x + w/2, y + h/2, 5, x + w/2, y + h/2, w/2);
+      g2.addColorStop(0, `rgba(255,255,255,${0.3 * pulse})`);
+      g2.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g2;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      break;
+    }
+    case 'stars': {
+      // Космос с мигающими звёздами внутри
+      ctx.fillStyle = skin.color;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      ctx.save();
+      ctx.beginPath(); roundRect(x, y, w, h, 8); ctx.clip();
+      for (let i = 0; i < 8; i++) {
+        const sx = x + ((i * 37 + t * 20) % w);
+        const sy = y + (i * 13) % h;
+        const alpha = 0.4 + Math.abs(Math.sin(t * 2 + i)) * 0.6;
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+        ctx.fillRect(sx, sy, 2, 2);
+      }
+      ctx.restore();
+      break;
+    }
+    case 'crystal': {
+      // Лёд с кристалликами
+      ctx.shadowColor = skin.color; ctx.shadowBlur = 15;
+      ctx.fillStyle = skin.color;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2.5;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      // Кристаллы внутри
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1;
+      for (let i = 0; i < 6; i++) {
+        const cx2 = x + 15 + i * (w - 30) / 5;
+        ctx.beginPath();
+        ctx.moveTo(cx2, y + 2);
+        ctx.lineTo(cx2 + 3, y + h - 2);
+        ctx.moveTo(cx2, y + h - 2);
+        ctx.lineTo(cx2 - 3, y + 2);
+        ctx.stroke();
+      }
+      break;
+    }
+    case 'lava': {
+      // Лава — красно-оранжевые волны
+      const grad = ctx.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, '#ff8800');
+      grad.addColorStop(0.5, skin.color);
+      grad.addColorStop(1, '#cc2200');
+      ctx.fillStyle = grad;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      // Пузырьки лавы
+      ctx.save();
+      ctx.beginPath(); roundRect(x, y, w, h, 8); ctx.clip();
+      for (let i = 0; i < 4; i++) {
+        const bx = x + (i * 30 + t * 15) % w;
+        const alpha = 0.4 + Math.sin(t * 4 + i) * 0.3;
+        ctx.fillStyle = `rgba(255,220,80,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(bx, y + h / 2, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'rainbow': {
+      // Радужная с бегущими цветами
+      const hueShift = (t * 100) % 360;
+      const grad = ctx.createLinearGradient(x, y, x + w, y);
+      for (let i = 0; i <= 5; i++) {
+        grad.addColorStop(i / 5, `hsl(${(hueShift + i * 60) % 360}, 100%, 60%)`);
+      }
+      ctx.shadowColor = `hsl(${hueShift}, 100%, 60%)`; ctx.shadowBlur = 20;
+      ctx.fillStyle = grad;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      break;
+    }
+    case 'matrix': {
+      // Матрица — цифры и зелёные полосы
+      ctx.fillStyle = '#000';
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.save();
+      ctx.beginPath(); roundRect(x, y, w, h, 8); ctx.clip();
+      ctx.fillStyle = skin.color;
+      ctx.font = 'bold 10px monospace';
+      for (let i = 0; i < 15; i++) {
+        const cx2 = x + ((i * 17 + t * 40) % w);
+        const alpha = 0.3 + Math.abs(Math.sin(t * 3 + i)) * 0.7;
+        ctx.globalAlpha = alpha;
+        ctx.fillText(Math.floor(Math.random() * 2) ? '1' : '0', cx2, y + h - 2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      break;
+    }
+    case 'ghost': {
+      // Прозрачный призрак
+      const alpha = 0.4 + Math.abs(Math.sin(t * 2)) * 0.5;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = skin.color;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      ctx.globalAlpha = 1;
+      break;
+    }
+    case 'plasma': {
+      // Плазма с пульсацией
+      const pulse = 0.8 + Math.abs(Math.sin(t * 5)) * 0.4;
+      ctx.shadowColor = skin.color; ctx.shadowBlur = 25 * pulse;
+      const grad = ctx.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, skin.color);
+      grad.addColorStop(1, '#ffffff');
+      ctx.fillStyle = grad;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+      // Волны внутри
+      ctx.save();
+      ctx.beginPath(); roundRect(x, y, w, h, 8); ctx.clip();
+      ctx.strokeStyle = `rgba(255,255,255,${0.5 + pulse * 0.3})`;
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        for (let p = 0; p <= w; p += 8) {
+          const py = y + h / 2 + Math.sin((p + t * 40 + i * 20) / 8) * 4;
+          if (p === 0) ctx.moveTo(x + p, py);
+          else ctx.lineTo(x + p, py);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+      break;
+    }
+    default: {
+      ctx.fillStyle = skin.color;
+      roundRect(x, y, w, h, 8); ctx.fill();
+      ctx.strokeStyle = skin.border; ctx.lineWidth = 2;
+      roundRect(x, y, w, h, 8); ctx.stroke();
+    }
+  }
+}
+
+/* ============================================================
+   22. ХЕЛПЕРЫ
+   ============================================================ */
+function drawButton(b, text, bg, border, textColor, fontSize = 18) {
+  ctx.fillStyle = bg;
+  roundRect(b.x, b.y, b.w, b.h, 10); ctx.fill();
+  ctx.strokeStyle = border; ctx.lineWidth = 2.5;
+  ctx.shadowColor = border; ctx.shadowBlur = 12;
+  roundRect(b.x, b.y, b.w, b.h, 10); ctx.stroke(); ctx.shadowBlur = 0;
+  ctx.fillStyle = textColor;
+  ctx.font = `bold ${fontSize}px Arial`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 1);
+}
+let avatarImgCache = null, avatarImgSrc = null;
+function drawAvatar(x, y, size) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x + size/2, y + size/2, size/2, 0, Math.PI * 2);
+  ctx.closePath(); ctx.clip();
+  if (profile.avatar) {
+    if (avatarImgSrc !== profile.avatar) {
+      avatarImgCache = new Image();
+      avatarImgCache.src = profile.avatar;
+      avatarImgSrc = profile.avatar;
+    }
+    if (avatarImgCache && avatarImgCache.complete) ctx.drawImage(avatarImgCache, x, y, size, size);
+  } else {
+    ctx.fillStyle = '#4fc3f7';
+    ctx.fillRect(x, y, size, size);
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${size/2}px Arial`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(profile.nick ? profile.nick[0].toUpperCase() : '?', x + size/2, y + size/2 + 2);
+  }
+  ctx.restore();
+  ctx.strokeStyle = '#4fc3f7'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x + size/2, y + size/2, size/2, 0, Math.PI * 2); ctx.stroke();
+}
+function drawMessage(text, color, y, size = 64) {
+  ctx.font = `bold ${size}px Arial`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  ctx.shadowColor = color; ctx.shadowBlur = 15;
+  ctx.fillText(text, W / 2, y);
+  ctx.shadowBlur = 0;
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* ============================================================
+   23. ОТРИСОВКА
+   ============================================================ */
+function draw() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, currentDiff ? currentDiff.bg1 : '#001020');
+  g.addColorStop(1, currentDiff ? currentDiff.bg2 : '#000');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === 'menu') { drawMenu(); return; }
+  if (state === 'shop') { drawShop(); return; }
+  if (state === 'profile') { drawProfile(); return; }
+  if (state === 'trophies') { drawTrophies(); return; }
+  if (state === 'pass') { drawPassScreen(); return; }
+
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, 50); ctx.lineTo(W, 50); ctx.stroke();
+
+  ctx.font = 'bold 14px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = currentDiff.color;
+  ctx.fillText('● ' + currentDiff.name, 10, 30);
+  ctx.fillStyle = '#aaa'; ctx.font = '13px Arial';
+  ctx.fillText('Шар: ' + BALLS[currentBall].name, 130, 30);
+
+  let effX = 260;
+  if (slowTimer > 0)   { ctx.fillStyle = '#32c8ff'; ctx.fillText('⏱' + Math.ceil(slowTimer/60), effX, 30); effX += 40; }
+  if (wideTimer > 0)   { ctx.fillStyle = '#32ff50'; ctx.fillText('↔' + Math.ceil(wideTimer/60), effX, 30); effX += 40; }
+  if (freezeTimer > 0) { ctx.fillStyle = '#88ddff'; ctx.fillText('❄' + Math.ceil(freezeTimer/60), effX, 30); effX += 40; }
+
+  if (boss) {
+    const pulse = 0.85 + Math.sin(boss.anim * 2) * 0.15;
+    const flash = boss.hitFlash > 0;
+    ctx.fillStyle = flash ? '#fff' : boss.color;
+    ctx.shadowColor = flash ? '#fff' : boss.color;
+    ctx.shadowBlur = 25 * pulse;
+    roundRect(boss.x, boss.y, boss.w, boss.h, 12); ctx.fill(); ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+    roundRect(boss.x, boss.y, boss.w, boss.h, 12); ctx.stroke();
+    ctx.fillStyle = '#ff3232';
+    ctx.beginPath(); ctx.arc(boss.x + boss.w * 0.3, boss.y + boss.h * 0.45, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(boss.x + boss.w * 0.7, boss.y + boss.h * 0.45, 6, 0, Math.PI * 2); ctx.fill();
+    const hpPct = boss.hp / boss.maxHp;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(boss.x, boss.y - 10, boss.w, 6);
+    ctx.fillStyle = hpPct > 0.5 ? '#32ff50' : hpPct > 0.25 ? '#ffe600' : '#ff3232';
+    ctx.fillRect(boss.x, boss.y - 10, boss.w * hpPct, 6);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Arial'; ctx.textAlign = 'center';
+    ctx.fillText(boss.name + (boss.rageMode ? ' 🔥' : ''), boss.x + boss.w / 2, boss.y - 18);
+  }
+
+  for (const br of bricks) {
+    if (!br.alive && br.dying <= 0) continue;
+    const alpha = br.alive ? 1 : br.dying;
+    ctx.globalAlpha = alpha;
+    if (br.special) {
+      const sp = SPECIALS[br.special];
+      br.anim += 0.08;
+      const pulse = 0.7 + Math.sin(br.anim) * 0.3;
+      ctx.shadowColor = sp.color; ctx.shadowBlur = 15 * pulse;
+      ctx.fillStyle = sp.color;
+      roundRect(br.x, br.y, br.w, br.h, 4); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      roundRect(br.x, br.y, br.w, br.h, 4); ctx.stroke();
+      ctx.fillStyle = '#000'; ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(sp.label, br.x + br.w / 2, br.y + br.h / 2 + 1);
+    } else {
+      ctx.fillStyle = br.color;
+      roundRect(br.x, br.y, br.w, br.h, 4); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
+      roundRect(br.x, br.y, br.w, br.h, 4); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  for (const bb of bossBullets) {
+    ctx.fillStyle = bb.color;
+    ctx.shadowColor = bb.color; ctx.shadowBlur = 15;
+    ctx.beginPath(); ctx.arc(bb.x + bb.size / 2, bb.y + bb.size / 2, bb.size / 2, 0, Math.PI * 2);
+    ctx.fill(); ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(bb.x + bb.size / 2, bb.y + bb.size / 2, bb.size / 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  drawPaddle();
+
+  if (balls) {
+    for (const b of balls) drawOneBall(b);
+  }
+
+  if (!ballLaunched && state === 'playing') {
+    ctx.font = 'bold 18px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffe600'; ctx.shadowColor = '#ffe600'; ctx.shadowBlur = 15;
+    ctx.fillText('← Сдвинь платформу, чтобы запустить мяч →', W / 2, H - 90);
+    ctx.shadowBlur = 0;
+  }
+
+  const gameMenuBtn = { x: W - 90, y: 10, w: 80, h: 30, id: 'game_menu' };
+  const gameShopBtn = { x: W - 180, y: 10, w: 80, h: 30, id: 'game_shop' };
+  drawButton(gameMenuBtn, '☰', 'rgba(255,255,255,0.1)', '#4fc3f7', '#4fc3f7', 14);
+  drawButton(gameShopBtn, '🛒', 'rgba(255,215,0,0.15)', '#ffd700', '#ffd700', 14);
+
+  const vbtnSize = 60;
+  const vLeft  = { x: 20, y: H - vbtnSize - 15, w: vbtnSize, h: vbtnSize, id: 'vleft' };
+  const vRight = { x: 20 + vbtnSize + 12, y: H - vbtnSize - 15, w: vbtnSize, h: vbtnSize, id: 'vright' };
+  ctx.globalAlpha = 0.45;
+  ctx.fillStyle = '#3296ff'; roundRect(vLeft.x, vLeft.y, vLeft.w, vLeft.h, 12); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 28px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('◀', vLeft.x + vLeft.w / 2, vLeft.y + vLeft.h / 2);
+  ctx.fillStyle = '#3296ff'; roundRect(vRight.x, vRight.y, vRight.w, vRight.h, 12); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillText('▶', vRight.x + vRight.w / 2, vRight.y + vRight.h / 2);
+  ctx.globalAlpha = 1;
+
+  setButtons([gameMenuBtn, gameShopBtn, vLeft, vRight]);
+
+  if (state === 'win' || state === 'lose') drawResult();
+}
+
+/* ============================================================
+   24. РЕЗУЛЬТАТ
+   ============================================================ */
+function drawResult() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  const isWin = state === 'win';
+  drawMessage(isWin ? 'ПОБЕДА!' : 'ИГРА ОКОНЧЕНА', isWin ? '#32ff50' : '#ff3232', 70, 46);
+  drawMessage('Счёт: ' + score, '#fff', 115, 26);
+  drawMessage(`Разбито: ${resultPercent}%`, '#aaa', 145, 16);
+  if (resultIsRecord && score > 0) drawMessage('🏆 НОВЫЙ РЕКОРД!', '#ff9628', 175, 20);
+  else drawMessage('Рекорд: ' + record[difficulty], '#ff9628', 175, 18);
+
+  const rc = resultReward >= 50 ? '#ffd700' : resultReward >= 2 ? '#ffe600' : '#888';
+  let rt = `+${resultReward} ⭐`;
+  if (resultReward >= 50) rt += '  (полное!)';
+  else if (resultReward >= 2) rt += '  (частичное)';
+  else if (resultReward === 1) rt += '  (мало)';
+  else rt = 'Без награды';
+  drawMessage(rt, rc, 210, 20);
+
+  if (resultTrophies > 0) {
+    let tt = `+${resultTrophies} 🏆`;
+    if (resultBossKilled) tt += `  (босс +${bossTrophyReward}!)`;
+    drawMessage(tt, '#ffcc00', 245, 20);
+  }
+  drawMessage(`+${resultXP} XP`, '#ff32ff', 280, 20);
+  drawMessage(`Всего: ${stars}⭐  |  ${trophies.total}🏆  |  Ур.${pass.level}`, '#aaa', 320, 14);
+
+  const btnW = 260, btnH = 44;
+  const btn1 = { x: W / 2 - btnW / 2, y: H - 180, w: btnW, h: btnH, id: 'result_restart' };
+  const btn2 = { x: W / 2 - btnW / 2, y: H - 125, w: btnW, h: btnH, id: 'result_menu' };
+  drawButton(btn1, '🔁 ЗАНОВО', 'rgba(50,150,255,0.25)', '#3296ff', '#fff', 18);
+  drawButton(btn2, '🏠 В МЕНЮ', 'rgba(255,255,255,0.12)', '#aaa', '#fff', 18);
+  setButtons([btn1, btn2]);
+}
+
+/* ============================================================
+   25. МЕНЮ
+   ============================================================ */
+function drawMenu() {
+  drawAvatar(20, 20, 60);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 18px Arial';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(profile.nick, 95, 42);
+  ctx.fillStyle = '#aaa'; ctx.font = '12px Arial';
+  ctx.fillText('⭐ ' + stars + '  🏆 ' + trophies.total, 95, 62);
+
+  const profBtn = { x: W - 100, y: 20, w: 80, h: 60, id: 'open_profile' };
+  drawButton(profBtn, '👤', 'rgba(79,195,247,0.15)', '#4fc3f7', '#4fc3f7', 22);
+
+  drawMessage(SEASONS[currentSeasonId - 1].name, SEASONS[currentSeasonId - 1].accent, 105, 22);
+  drawMessage('БЛОКБАСТЕР', '#4fc3f7', 145, 40);
+  drawMessage('Выберите уровень', '#aaa', 175, 15);
+
+  const btnW = 200, btnH = 155, gap = 30;
+  const totalW = btnW * 3 + gap * 2;
+  const startX = (W - totalW) / 2;
+  const btnY = 200;
+
+  const diffBtns = [];
+  diffKeys.forEach((key, i) => {
+    const d = DIFFICULTIES[key];
+    const sb = getSeasonBoss(key);
+    const bx = startX + i * (btnW + gap);
+    const selected = i === menuIndex;
+    ctx.fillStyle = selected ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)';
+    roundRect(bx, btnY, btnW, btnH, 12); ctx.fill();
+    ctx.strokeStyle = selected ? d.color : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = selected ? 4 : 2;
+    ctx.shadowColor = selected ? d.color : 'transparent';
+    ctx.shadowBlur = selected ? 20 : 0;
+    roundRect(bx, btnY, btnW, btnH, 12); ctx.stroke(); ctx.shadowBlur = 0;
+    ctx.font = 'bold 20px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = d.color;
+    ctx.fillText(d.name, bx + btnW / 2, btnY + 24);
+    ctx.font = '12px Arial'; ctx.fillStyle = '#ccc'; ctx.textAlign = 'left';
+    [
+      `❤ ${d.lives}   ⚡ ${d.ballSpeed}`,
+      `▭ ${d.paddleW}   ▦ ${d.rows}`,
+      `★ ×${d.scoreMultiplier}`,
+      `👹 ${sb.name}`,
+      `🏆 Босс: ${sb.trophy}`
+    ].forEach((line, li) => ctx.fillText(line, bx + 15, btnY + 55 + li * 17));
+    ctx.font = 'bold 13px Arial'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff9628';
+    ctx.fillText('🏆 ' + (record[key] || 0), bx + btnW / 2, btnY + btnH - 12);
+    diffBtns.push({ x: bx, y: btnY, w: btnW, h: btnH, id: 'diff_' + key });
+  });
+
+  const y1 = H - 190, y2 = H - 130, y3 = H - 70;
+  const shopBtn = { x: 40, y: y1, w: 220, h: 48, id: 'open_shop' };
+  drawButton(shopBtn, '🛒 МАГАЗИН', 'rgba(255,215,0,0.15)', '#ffd700', '#ffd700', 17);
+  const passBtn = { x: W - 260, y: y1, w: 220, h: 48, id: 'open_pass' };
+  drawButton(passBtn, '🎫 ПРОПУСК', 'rgba(138,43,226,0.25)', '#8a2be2', '#fff', 17);
+  const trophyBtn = { x: 40, y: y2, w: 220, h: 48, id: 'open_trophies' };
+  drawButton(trophyBtn, '🏆 ТРОФЕИ', 'rgba(255,204,0,0.15)', '#ffcc00', '#ffcc00', 17);
+
+  const today = new Date().toISOString().slice(0, 10);
+  let dailyBtn = null;
+  if (lastDailyDate !== today) {
+    dailyBtn = { x: W - 260, y: y2, w: 220, h: 48, id: 'claim_daily' };
+    drawButton(dailyBtn, '🎁 ЕЖЕДНЕВНАЯ', 'rgba(50,255,80,0.15)', '#32ff50', '#32ff50', 15);
+  }
+  let resumeBtn = null;
+  if (savedGame) {
+    resumeBtn = { x: W / 2 - 200, y: y3, w: 400, h: 48, id: 'resume_game' };
+    drawButton(resumeBtn, '▶ ПРОДОЛЖИТЬ ИГРУ', 'rgba(255,150,40,0.2)', '#ff9628', '#ff9628', 18);
+  }
+  const list = [...diffBtns, profBtn, shopBtn, passBtn, trophyBtn];
+  if (dailyBtn) list.push(dailyBtn);
+  if (resumeBtn) list.push(resumeBtn);
+  setButtons(list);
+
+  drawMessage('ПРОБЕЛ — начать  |  B — пропуск  |  S — магазин', '#666', H - 25, 12);
+}
+
+/* ============================================================
+   26. МАГАЗИН
+   ============================================================ */
+function drawShop() {
+  drawMessage('🛒 МАГАЗИН', '#ffd700', 32, 26);
+  drawMessage('⭐ ' + stars, '#ffd700', 60, 16);
+  const tab1 = { x: W / 2 - 170, y: 78, w: 160, h: 34, id: 'shop_tab_balls' };
+  const tab2 = { x: W / 2 + 10, y: 78, w: 160, h: 34, id: 'shop_tab_skins' };
+  drawButton(tab1, 'ШАРЫ', shopTab === 'balls' ? 'rgba(50,150,255,0.3)' : 'rgba(255,255,255,0.08)', shopTab === 'balls' ? '#3296ff' : '#666', shopTab === 'balls' ? '#fff' : '#aaa', 14);
+  drawButton(tab2, 'ПЛАТФОРМЫ', shopTab === 'skins' ? 'rgba(50,150,255,0.3)' : 'rgba(255,255,255,0.08)', shopTab === 'skins' ? '#3296ff' : '#666', shopTab === 'skins' ? '#fff' : '#aaa', 14);
+  const keys = shopTab === 'balls' ? BALL_KEYS : SKIN_KEYS;
+  const owned = shopTab === 'balls' ? ownedBalls : ownedSkins;
+  const current = shopTab === 'balls' ? currentBall : currentSkin;
+  const catalog = shopTab === 'balls' ? BALLS : PADDLE_SKINS;
+  const cols = 5, cardW = 140, cardH = 175, gapX = 10, gapY = 14;
+  const totalW = cardW * cols + gapX * (cols - 1);
+  const startX = (W - totalW) / 2;
+  const startY = 130;
+  const shopBtns = [];
+  keys.forEach((key, i) => {
+    const b = catalog[key];
+    const col = i % cols, row = Math.floor(i / cols);
+    const bx = startX + col * (cardW + gapX);
+    const by = startY + row * (cardH + gapY);
+    const isOwned = owned.includes(key);
+    const isEquipped = current === key;
+    const isSelected = i === shopIndex;
+    const canAfford = stars >= b.price;
+    ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)';
+    roundRect(bx, by, cardW, cardH, 10); ctx.fill();
+    ctx.strokeStyle = isEquipped ? '#32ff50' : (isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)');
+    ctx.lineWidth = isEquipped || isSelected ? 3 : 1.5;
+    roundRect(bx, by, cardW, cardH, 10); ctx.stroke();
+    const pcx = bx + cardW / 2, pcy = by + 42;
+    if (shopTab === 'balls') drawBallPreview(key, pcx, pcy, 16);
+    else {
+      // Превью платформы с анимацией стиля
+      const oldPaddle = paddle;
+      const oldSkin = currentSkin;
+      // Временный paddle для отрисовки
+      const tempPaddle = { x: pcx - 45, y: pcy - 6, w: 90, h: 12 };
+      const oldPaddleRef = paddle;
+      paddle = tempPaddle;
+      const oldCurrentSkin = currentSkin;
+      currentSkin = key;
+      drawPaddle();
+      paddle = oldPaddleRef;
+      currentSkin = oldCurrentSkin;
+    }
+    ctx.font = 'bold 13px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = b.color === '#000000' ? '#8a2be2' : b.color;
+    ctx.fillText(b.name, pcx, by + 78);
+    ctx.font = 'bold 12px Arial';
+    if (isEquipped) { ctx.fillStyle = '#32ff50'; ctx.fillText('✓ ВЫБРАН', pcx, by + cardH - 18); }
+    else if (isOwned) { ctx.fillStyle = '#4fc3f7'; ctx.fillText('Куплен (нажми)', pcx, by + cardH - 18); }
+    else { ctx.fillStyle = canAfford ? '#ffd700' : '#ff3232'; ctx.fillText('⭐ ' + b.price, pcx, by + cardH - 18); }
+    shopBtns.push({ x: bx, y: by, w: cardW, h: cardH, id: shopTab === 'balls' ? 'shop_item_ball' : 'shop_item_skin' });
+  });
+  const backBtn = { x: W / 2 - 130, y: H - 55, w: 260, h: 42, id: 'shop_back' };
+  drawButton(backBtn, '⬅ НАЗАД', 'rgba(255,255,255,0.12)', '#aaa', '#fff', 16);
+  setButtons([tab1, tab2, ...shopBtns, backBtn]);
+}
+
+/* ============================================================
+   27. ПРОФИЛЬ
+   ============================================================ */
+function drawProfile() {
+  drawMessage('👤 ПРОФИЛЬ', '#4fc3f7', 40, 28);
+  const avSize = 130;
+  const avX = W / 2 - avSize / 2;
+  const avY = 80;
+  drawAvatar(avX, avY, avSize);
+  const changeAv = { x: W / 2 - 130, y: avY + avSize + 12, w: 260, h: 38, id: 'profile_avatar' };
+  drawButton(changeAv, '📷 СМЕНИТЬ ФОТО', 'rgba(79,195,247,0.15)', '#4fc3f7', '#4fc3f7', 15);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(profile.nick, W / 2, avY + avSize + 85);
+  const changeNick = { x: W / 2 - 130, y: avY + avSize + 110, w: 260, h: 38, id: 'profile_nick' };
+  drawButton(changeNick, '✏ ИЗМЕНИТЬ НИК', 'rgba(255,255,255,0.1)', '#aaa', '#fff', 15);
+  const statsY = avY + avSize + 175;
+  ctx.fillStyle = '#ffd700'; ctx.font = 'bold 18px Arial';
+  ctx.fillText('⭐ Звёзд: ' + stars, W / 2, statsY);
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillText('🏆 Трофеев: ' + trophies.total, W / 2, statsY + 30);
+  ctx.fillStyle = '#aaa'; ctx.font = '14px Arial';
+  ctx.fillText('Побед: ' + Object.values(trophies.wins).reduce((a,b) => a+b, 0) +
+               '  |  Боссов: ' + Object.values(trophies.bosses).reduce((a,b) => a+b, 0), W / 2, statsY + 58);
+  ctx.fillStyle = '#ff32ff'; ctx.font = 'bold 16px Arial';
+  ctx.fillText('Ур. пропуска: ' + pass.level + ' / 30', W / 2, statsY + 88);
+  const resetBtn = { x: W / 2 - 130, y: H - 110, w: 260, h: 38, id: 'profile_reset' };
+  drawButton(resetBtn, '🗑 СБРОСИТЬ ПРОФИЛЬ', 'rgba(255,50,50,0.15)', '#ff3232', '#ff3232', 14);
+  const backBtn = { x: W / 2 - 130, y: H - 60, w: 260, h: 42, id: 'profile_back' };
+  drawButton(backBtn, '⬅ НАЗАД', 'rgba(255,255,255,0.12)', '#aaa', '#fff', 16);
+  setButtons([changeAv, changeNick, resetBtn, backBtn]);
+}
+
+/* ============================================================
+   28. ТРОФЕИ
+   ============================================================ */
+function drawTrophies() {
+  drawMessage('🏆 ТАБЛИЦА ТРОФЕЕВ', '#ffcc00', 40, 26);
+  drawMessage('Всего: ' + trophies.total, '#ffd700', 72, 20);
+  const startY = 105;
+  const rowH = 105;
+  diffKeys.forEach((key, i) => {
+    const d = DIFFICULTIES[key];
+    const sb = getSeasonBoss(key);
+    const y = startY + i * rowH;
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    roundRect(40, y, W - 80, rowH - 10, 12); ctx.fill();
+    ctx.strokeStyle = d.color; ctx.lineWidth = 2;
+    roundRect(40, y, W - 80, rowH - 10, 12); ctx.stroke();
+    ctx.font = 'bold 20px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = d.color;
+    ctx.fillText(d.name, 60, y + 24);
+    ctx.font = '14px Arial'; ctx.fillStyle = '#ccc';
+    ctx.fillText('Рекорд: ' + (record[key] || 0), 60, y + 50);
+    const wins = trophies.wins[key] || 0;
+    const bossWins = trophies.bosses[key] || 0;
+    const totalFromDiff = wins * 1 + bossWins * sb.trophy;
+    ctx.fillStyle = '#fff';
+    ctx.fillText('Побед: ' + wins + '  |  Боссов: ' + bossWins, 60, y + 74);
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = 'bold 18px Arial'; ctx.textAlign = 'right';
+    ctx.fillText('🏆 ' + totalFromDiff, W - 60, y + 24);
+    ctx.font = '12px Arial'; ctx.fillStyle = '#aaa';
+    ctx.fillText('Босс даёт ' + sb.trophy + ' троф.', W - 60, y + 50);
+  });
+  const hintsY = startY + 3 * rowH + 8;
+  ctx.fillStyle = '#888'; ctx.font = '13px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('+1 трофей за победу уровня', W / 2, hintsY);
+  ctx.fillText('+бонус за босса (чем сложнее — тем больше)', W / 2, hintsY + 18);
+  const backBtn = { x: W / 2 - 130, y: H - 55, w: 260, h: 42, id: 'trophies_back' };
+  drawButton(backBtn, '⬅ НАЗАД', 'rgba(255,255,255,0.12)', '#aaa', '#fff', 16);
+  setButtons([backBtn]);
+}
+
+/* ============================================================
+   29. ПРОПУСК
+   ============================================================ */
+function drawPassScreen() {
+  const season = SEASONS[currentSeasonId - 1];
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, season.color);
+  g.addColorStop(1, '#000');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, W, 105);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(season.name, W / 2, 30);
+  ctx.font = 'bold 14px Arial';
+  ctx.fillStyle = season.accent;
+  const reqXP = xpForLevel(pass.level);
+  ctx.fillText('Уровень ' + pass.level + ' / ' + PASS_LEVELS + '   |   XP: ' + pass.xp + ' / ' + reqXP, W / 2, 56);
+
+  const barW = W - 80, barH = 10;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  roundRect(40, 78, barW, barH, 5); ctx.fill();
+  const pct = Math.min(1, pass.xp / reqXP);
+  ctx.fillStyle = season.accent;
+  ctx.shadowColor = season.accent; ctx.shadowBlur = 12;
+  roundRect(40, 78, barW * pct, barH, 5); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Кнопка забрать всё
+  const claimAllBtn = { x: W / 2 - 90, y: H - 55, w: 180, h: 40, id: 'pass_claim_all' };
+  drawButton(claimAllBtn, '🎁 ЗАБРАТЬ ВСЁ', 'rgba(50,255,80,0.25)', '#32ff50', '#fff', 14);
+
+  const premBtn = { x: W - 180, y: H - 105, w: 160, h: 40, id: 'pass_buy_premium' };
+  if (!pass.premium) drawButton(premBtn, '💎 ПРЕМИУМ 200⭐', 'rgba(255,50,255,0.2)', '#ff32ff', '#ff32ff', 12);
+  else drawButton(premBtn, '💎 ПРЕМИУМ ✓', 'rgba(50,255,80,0.2)', '#32ff50', '#32ff50', 14);
+  const backBtn = { x: 20, y: H - 105, w: 160, h: 40, id: 'pass_back' };
+  drawButton(backBtn, '⬅ НАЗАД', 'rgba(255,255,255,0.12)', '#aaa', '#fff', 14);
+
+  const arrowL = { x: 8, y: H / 2 - 60, w: 30, h: 50, id: 'pass_scroll_left' };
+  const arrowR = { x: W - 38, y: H / 2 - 60, w: 30, h: 50, id: 'pass_scroll_right' };
+  ctx.globalAlpha = 0.5;
+  drawButton(arrowL, '◀', 'rgba(0,0,0,0.5)', season.accent, season.accent, 20);
+  drawButton(arrowR, '▶', 'rgba(0,0,0,0.5)', season.accent, season.accent, 20);
+  ctx.globalAlpha = 1;
+
+  const PASS_CARD_W = 130;
+  const PASS_CARD_H = 200;
+  const startY = 125;
+  const visibleCards = Math.floor((W - 60) / (PASS_CARD_W + 12));
+  const maxScroll = Math.max(0, PASS_LEVELS - visibleCards);
+
+  for (let i = 0; i < PASS_LEVELS; i++) {
+    const x = 30 + i * (PASS_CARD_W + 12) - passScroll * (PASS_CARD_W + 12);
+    if (x + PASS_CARD_W < 30 || x > W - 20) continue;
+    const reward = passRewards[i];
+    const unlocked = pass.level >= (i + 1);
+    const freeKey = 'F' + (i + 1);
+    const premKey = 'P' + (i + 1);
+    const freeClaimed = pass.claimed.includes(freeKey);
+    const premClaimed = pass.claimed.includes(premKey);
+
+    ctx.fillStyle = unlocked ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.05)';
+    roundRect(x, startY, PASS_CARD_W, PASS_CARD_H, 10); ctx.fill();
+    ctx.strokeStyle = unlocked ? season.accent : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = unlocked ? 2 : 1;
+    roundRect(x, startY, PASS_CARD_W, PASS_CARD_H, 10); ctx.stroke();
+
+    ctx.font = 'bold 14px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = unlocked ? '#fff' : '#666';
+    ctx.fillText('Ур. ' + (i + 1), x + PASS_CARD_W / 2, startY + 18);
+
+    const freeY = startY + 45;
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    roundRect(x + 8, freeY, PASS_CARD_W - 16, 55, 6); ctx.fill();
+    ctx.font = '10px Arial'; ctx.fillStyle = '#aaa';
+    ctx.fillText('FREE', x + PASS_CARD_W / 2, freeY + 10);
+    ctx.font = 'bold 14px Arial'; ctx.fillStyle = '#fff';
+    drawRewardIcon(reward.free, x + PASS_CARD_W / 2, freeY + 32);
+
+    if (freeClaimed) {
+      ctx.fillStyle = '#32ff50'; ctx.font = 'bold 14px Arial';
+      ctx.fillText('✓', x + PASS_CARD_W / 2, freeY + 50);
+    } else if (unlocked) {
+      ctx.fillStyle = '#ffe600'; ctx.font = 'bold 12px Arial';
+      ctx.fillText('(авто)', x + PASS_CARD_W / 2, freeY + 50);
+    }
+
+    const premY = startY + 115;
+    ctx.fillStyle = pass.premium ? 'rgba(255,50,255,0.15)' : 'rgba(0,0,0,0.6)';
+    roundRect(x + 8, premY, PASS_CARD_W - 16, 55, 6); ctx.fill();
+    ctx.font = '10px Arial'; ctx.fillStyle = pass.premium ? '#ff32ff' : '#666';
+    ctx.fillText('💎 PREMIUM', x + PASS_CARD_W / 2, premY + 10);
+    ctx.font = 'bold 14px Arial'; ctx.fillStyle = pass.premium ? '#fff' : '#555';
+    drawRewardIcon(reward.premium, x + PASS_CARD_W / 2, premY + 32);
+
+    if (premClaimed) {
+      ctx.fillStyle = '#ff32ff'; ctx.font = 'bold 14px Arial';
+      ctx.fillText('✓', x + PASS_CARD_W / 2, premY + 50);
+    } else if (pass.premium && unlocked) {
+      ctx.fillStyle = '#ffe600'; ctx.font = 'bold 12px Arial';
+      ctx.fillText('(авто)', x + PASS_CARD_W / 2, premY + 50);
+    }
+
+    if (!unlocked) {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      roundRect(x, startY, PASS_CARD_W, PASS_CARD_H, 10); ctx.fill();
+      ctx.font = 'bold 32px Arial'; ctx.fillStyle = '#888';
+      ctx.fillText('🔒', x + PASS_CARD_W / 2, startY + PASS_CARD_H / 2);
+    }
+  }
+
+  setButtons([premBtn, backBtn, claimAllBtn, arrowL, arrowR]);
+
+  ctx.fillStyle = '#aaa'; ctx.font = '12px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Награды выдаются автоматически при достижении уровня', W / 2, H - 15);
+}
+
+function drawRewardIcon(reward, cx, cy) {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if (reward.type === 'stars') {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('⭐ ×' + reward.amount, cx, cy);
+  } else if (reward.type === 'ball' && reward.ballKey) {
+    drawBallPreview(reward.ballKey, cx, cy, 14);
+  } else if (reward.type === 'skin' && reward.skinKey) {
+    // Рисуем миниатюру скина с анимацией
+    const oldPaddle = paddle;
+    const oldSkin = currentSkin;
+    const tempPaddle = { x: cx - 40, y: cy - 6, w: 80, h: 12 };
+    paddle = tempPaddle;
+    currentSkin = reward.skinKey;
+    drawPaddle();
+    paddle = oldPaddle;
+    currentSkin = oldSkin;
+  }
+}
+
+/* ============================================================
+   30. ПРЕВЬЮ ШАРА (с новыми анимациями)
+   ============================================================ */
+function drawBallPreview(key, cx, cy, r) {
+  const b = BALLS[key], t = particleTime;
+  switch (b.anim) {
+    case 'classic':
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = b.color; ctx.fill();
+      ctx.strokeStyle = b.trailColor; ctx.lineWidth = 2; ctx.stroke(); break;
+    case 'plasma': {
+      const p = 1 + Math.sin(t*4)*0.15;
+      ctx.shadowColor = b.color; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(cx, cy, r*p, 0, Math.PI*2);
+      ctx.fillStyle = b.color; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r*0.5, 0, Math.PI*2);
+      ctx.fillStyle = '#fff'; ctx.fill(); break;
+    }
+    case 'fire': {
+      for (let i = 0; i < 5; i++) {
+        const a = t*3 + i*Math.PI*2/5;
+        const d = r*(0.6 + Math.sin(t*6+i)*0.4);
+        ctx.beginPath(); ctx.arc(cx+Math.cos(a)*d, cy+Math.sin(a)*d, r*0.5, 0, Math.PI*2);
+        ctx.fillStyle = i%2===0 ? b.color : b.trailColor;
+        ctx.shadowColor = b.color; ctx.shadowBlur = 15; ctx.fill(); ctx.shadowBlur = 0;
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, r*0.7, 0, Math.PI*2);
+      ctx.fillStyle = '#fff'; ctx.fill(); break;
+    }
+    case 'neon': {
+      const bl = 0.5 + Math.abs(Math.sin(t*5))*0.5;
+      ctx.shadowColor = b.color; ctx.shadowBlur = 25*bl;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.fillStyle = b.color; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r*(0.5+bl*0.3), 0, Math.PI*2);
+      ctx.fillStyle = b.trailColor; ctx.fill(); break;
+    }
+    case 'ghost': {
+      ctx.globalAlpha = 0.4 + Math.abs(Math.sin(t*2))*0.4;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.fillStyle = b.color; ctx.fill();
+      ctx.strokeStyle = b.trailColor; ctx.lineWidth = 2; ctx.stroke();
+      ctx.globalAlpha = 1; break;
+    }
+    case 'rainbow': {
+      const h = (t*100)%360;
+      ctx.shadowColor = `hsl(${h},100%,60%)`; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.fillStyle = `hsl(${h},100%,60%)`; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r*0.55, 0, Math.PI*2);
+      ctx.fillStyle = `hsl(${(h+180)%360},100%,60%)`; ctx.fill(); break;
+    }
+    case 'star': {
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(t*3);
+      ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2);
+      ctx.fillStyle = b.color; ctx.shadowColor = b.color; ctx.shadowBlur = 20; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      for (let i = 0; i < 6; i++) {
+        const a = i*Math.PI/3;
+        ctx.beginPath(); ctx.moveTo(0,0);
+        ctx.lineTo(Math.cos(a)*r*1.4, Math.sin(a)*r*1.4); ctx.stroke();
+      }
+      ctx.restore(); break;
+    }
+    case 'void': {
+      ctx.shadowColor = b.trailColor; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.fillStyle = '#000'; ctx.fill();
+      ctx.strokeStyle = b.trailColor; ctx.lineWidth = 2.5; ctx.stroke(); ctx.shadowBlur = 0;
+      for (let i = 0; i < 4; i++) {
+        const a = t*2 + i*Math.PI/2;
+        ctx.beginPath(); ctx.arc(cx+Math.cos(a)*(r+4), cy+Math.sin(a)*(r+4), 2, 0, Math.PI*2);
+        ctx.fillStyle = b.trailColor; ctx.fill();
+      }
+      break;
+    }
+    case 'lightning': {
+      const pulse = 0.85 + Math.abs(Math.sin(t * 8)) * 0.3;
+      ctx.shadowColor = b.color; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = b.color; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + t * 3;
+        const dist = r + (i % 2 === 0 ? 6 : 2);
+        const px = cx + Math.cos(a) * dist;
+        const py = cy + Math.sin(a) * dist;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      break;
+    }
+    case 'vortex': {
+      ctx.shadowColor = b.color; ctx.shadowBlur = 20;
+      for (let i = 0; i < 3; i++) {
+        const a = t * 4 + i * Math.PI * 2 / 3;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * 4, cy + Math.sin(a) * 4, r * 0.9, 0, Math.PI * 2);
+        ctx.fillStyle = hexA(b.color, 0.6);
+        ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      break;
+    }
+    case 'crystal': {
+      const rot = t * 2;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot);
+      ctx.shadowColor = b.color; ctx.shadowBlur = 20;
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = i * Math.PI / 3;
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 'dragon': {
+      const pulse = 1 + Math.sin(t * 6) * 0.2;
+      ctx.shadowColor = b.color; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = b.color; ctx.fill(); ctx.shadowBlur = 0;
+      for (let i = 0; i < 6; i++) {
+        const a = t * 3 + i * Math.PI / 3;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * r * 1.4, cy + Math.sin(a) * r * 1.4, r * 0.35, 0, Math.PI * 2);
+        ctx.fillStyle = i % 2 === 0 ? b.color : b.trailColor;
+        ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      break;
+    }
+    case 'galaxy': {
+      const rot = t * 1.5;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot);
+      ctx.shadowColor = b.color; ctx.shadowBlur = 25;
+      for (let arm = 0; arm < 3; arm++) {
+        const baseA = arm * Math.PI * 2 / 3;
+        for (let p = 0; p < 5; p++) {
+          const dist = r * 0.3 + p * (r / 5);
+          const a = baseA + p * 0.5;
+          ctx.beginPath();
+          ctx.arc(Math.cos(a) * dist, Math.sin(a) * dist, 1.5 + p * 0.2, 0, Math.PI * 2);
+          ctx.fillStyle = arm === 0 ? b.color : (arm === 1 ? b.trailColor : '#fff');
+          ctx.fill();
+        }
+      }
+      ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.4, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.restore();
+      break;
+    }
+  }
+}
+
+/* ============================================================
+   31. СТАРТ
+   ============================================================ */
+state = 'menu';
+particles = [];
+bossBullets = [];
+paddle = { x: W/2 - 60, y: H - 40, w: 120, h: 15, speed: 9 };
+balls = [];
+bricks = [];
+boss = null;
+score = 0;
+lives = 3;
+currentDiff = DIFFICULTIES[difficulty];
+updateHUD();
+
+// Автовыдача наград при запуске (для тех, кто уже прошёл уровни)
+autoClaimAvailableRewards();
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
